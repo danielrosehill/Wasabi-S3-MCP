@@ -1,5 +1,7 @@
 # Wasabi MCP Server
 
+[![npm version](https://img.shields.io/npm/v/wasabi-mcp.svg)](https://www.npmjs.com/package/wasabi-mcp)
+
 A Model Context Protocol (MCP) server for interacting with [Wasabi](https://wasabi.com/) cloud storage. This server provides tools for managing Wasabi buckets and objects through the MCP interface, enabling integration with Claude Code and other MCP-compatible applications.
 
 ## Features
@@ -23,7 +25,7 @@ A Model Context Protocol (MCP) server for interacting with [Wasabi](https://wasa
 ### From NPM
 
 ```bash
-npm install -g @danielrosehill/wasabi-mcp-server
+npm install -g wasabi-mcp
 ```
 
 ### From Source
@@ -72,7 +74,7 @@ Common Wasabi regions and their endpoints:
 Add the server to Claude Code using the `claude mcp add` command:
 
 ```bash
-claude mcp add wasabi -s user -- npx @danielrosehill/wasabi-mcp-server
+claude mcp add wasabi -s user -- npx wasabi-mcp
 ```
 
 Then set your environment variables. You can either:
@@ -92,7 +94,7 @@ Then set your environment variables. You can either:
      -e WASABI_SECRET_ACCESS_KEY=your_secret_key \
      -e WASABI_REGION=eu-central-2 \
      -e WASABI_ENDPOINT=s3.eu-central-2.wasabisys.com \
-     -- npx @danielrosehill/wasabi-mcp-server
+     -- npx wasabi-mcp
    ```
 
 ### Verify Installation

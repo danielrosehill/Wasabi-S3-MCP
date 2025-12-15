@@ -1,11 +1,11 @@
 {
-  "name": "@danielrosehill/wasabi-mcp-server",
+  "name": "wasabi-mcp",
   "version": "1.0.0",
   "description": "MCP server for Wasabi S3-compatible cloud storage operations",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "wasabi-mcp-server": "dist/index.js"
+    "wasabi-mcp": "dist/index.js"
   },
   "files": [
     "dist",
