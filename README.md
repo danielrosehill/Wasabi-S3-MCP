@@ -4,21 +4,22 @@
 
 A Model Context Protocol (MCP) server for interacting with [Wasabi](https://wasabi.com/) cloud storage. This server provides tools for managing Wasabi buckets and objects through the MCP interface, enabling integration with Claude Code and other MCP-compatible applications.
 
+## v2.0 - Streamable HTTP Transport
+
+This version uses the modern **Streamable HTTP transport** instead of stdio, making it suitable for:
+- Running as a standalone HTTP server
+- Connecting via MCP aggregators
+- Integration with tools that support HTTP-based MCP servers
+
 ## Features
 
-### Bucket Operations
-- **list_buckets** - List all buckets in your Wasabi account
-- **create_bucket** - Create a new bucket
-- **delete_bucket** - Delete a bucket (must be empty)
-- **get_bucket_location** - Get the region/location of a bucket
+### Consolidated Tools (3 tools instead of 10)
 
-### Object Operations
-- **list_objects** - List objects in a bucket with optional prefix filtering
-- **upload_object** - Upload files to a bucket
-- **download_object** - Download objects from a bucket
-- **delete_object** - Delete objects from a bucket
-- **get_object_metadata** - Get metadata for an object (size, content type, last modified, etc.)
-- **generate_presigned_url** - Generate temporary signed URLs for object access
+| Tool | Actions | Description |
+|------|---------|-------------|
+| `bucket` | list, create, delete, location | Manage Wasabi buckets |
+| `object` | list, upload, download, delete, metadata | Manage objects in buckets |
+| `presign` | get, put | Generate presigned URLs for temporary access |
 
 ## Installation
 
@@ -49,6 +50,7 @@ The server requires the following environment variables:
 | `WASABI_SECRET_ACCESS_KEY` | Your Wasabi secret key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
 | `WASABI_REGION` | Wasabi region | `eu-central-2` |
 | `WASABI_ENDPOINT` | Wasabi endpoint URL | `s3.eu-central-2.wasabisys.com` |
+| `PORT` | Server port (optional) | `3000` (default) |
 
 ### Wasabi Regions
 
@@ -69,43 +71,144 @@ Common Wasabi regions and their endpoints:
 | `ap-southeast-1` | `s3.ap-southeast-1.wasabisys.com` |
 | `ap-southeast-2` | `s3.ap-southeast-2.wasabisys.com` |
 
+## Running the Server
+
+### Start the Server
+
+```bash
+# Set environment variables first, then:
+npm start
+
+# Or run directly:
+PORT=3000 node dist/index.js
+```
+
+The server will start on `http://localhost:3000/mcp` with a health check at `http://localhost:3000/health`.
+
 ## Usage with Claude Code
 
-Add the server to Claude Code using the `claude mcp add` command:
+### JSON Configuration
 
-```bash
-claude mcp add wasabi -s user -- npx wasabi-mcp
+Add to your Claude Code MCP settings (`~/.config/claude-code/settings.json` or project-level):
+
+```json
+{
+  "mcpServers": {
+    "wasabi": {
+      "url": "http://localhost:3000/mcp",
+      "transport": "streamable-http"
+    }
+  }
+}
 ```
 
-Then set your environment variables. You can either:
+**Note:** You must start the server separately before using with Claude Code.
 
-1. **Set in your shell profile** (e.g., `~/.bashrc`, `~/.zshrc`):
-   ```bash
-   export WASABI_ACCESS_KEY_ID=your_access_key
-   export WASABI_SECRET_ACCESS_KEY=your_secret_key
-   export WASABI_REGION=eu-central-2
-   export WASABI_ENDPOINT=s3.eu-central-2.wasabisys.com
-   ```
+### Alternative: Run Server with Environment Variables
 
-2. **Pass environment variables directly**:
-   ```bash
-   claude mcp add wasabi -s user \
-     -e WASABI_ACCESS_KEY_ID=your_access_key \
-     -e WASABI_SECRET_ACCESS_KEY=your_secret_key \
-     -e WASABI_REGION=eu-central-2 \
-     -e WASABI_ENDPOINT=s3.eu-central-2.wasabisys.com \
-     -- npx wasabi-mcp
-   ```
-
-### Verify Installation
+Create a `.env` file:
 
 ```bash
-claude mcp list
+WASABI_ACCESS_KEY_ID=your_access_key
+WASABI_SECRET_ACCESS_KEY=your_secret_key
+WASABI_REGION=eu-central-2
+WASABI_ENDPOINT=s3.eu-central-2.wasabisys.com
+PORT=3000
 ```
 
-You should see `wasabi` listed with a connected status.
+Then start the server:
 
-## Usage Examples
+```bash
+npm start
+```
+
+## API Reference
+
+### bucket
+
+Manage Wasabi buckets.
+
+**Parameters:**
+- `action` (string, required): One of `list`, `create`, `delete`, `location`
+- `name` (string): Bucket name (required for create, delete, location)
+
+**Examples:**
+```json
+// List all buckets
+{ "action": "list" }
+
+// Create a bucket
+{ "action": "create", "name": "my-new-bucket" }
+
+// Delete a bucket
+{ "action": "delete", "name": "my-bucket" }
+
+// Get bucket location
+{ "action": "location", "name": "my-bucket" }
+```
+
+---
+
+### object
+
+Manage objects in Wasabi buckets.
+
+**Parameters:**
+- `action` (string, required): One of `list`, `upload`, `download`, `delete`, `metadata`
+- `bucket` (string, required): Bucket name
+- `key` (string): Object key/path (required for upload, download, delete, metadata)
+- `local_path` (string): Local file path (required for upload and download)
+- `prefix` (string): Filter prefix for list action
+- `max_keys` (number): Maximum objects to return (default: 1000)
+- `content_type` (string): MIME type for upload
+
+**Examples:**
+```json
+// List objects
+{ "action": "list", "bucket": "my-bucket" }
+
+// List with prefix
+{ "action": "list", "bucket": "my-bucket", "prefix": "reports/", "max_keys": 100 }
+
+// Upload a file
+{ "action": "upload", "bucket": "my-bucket", "key": "docs/report.pdf", "local_path": "/home/user/report.pdf" }
+
+// Download a file
+{ "action": "download", "bucket": "my-bucket", "key": "docs/report.pdf", "local_path": "/home/user/downloads/report.pdf" }
+
+// Delete an object
+{ "action": "delete", "bucket": "my-bucket", "key": "docs/old-report.pdf" }
+
+// Get metadata
+{ "action": "metadata", "bucket": "my-bucket", "key": "docs/report.pdf" }
+```
+
+---
+
+### presign
+
+Generate presigned URLs for temporary access.
+
+**Parameters:**
+- `bucket` (string, required): Bucket name
+- `key` (string, required): Object key/path
+- `operation` (string): `get` (download) or `put` (upload). Default: `get`
+- `expires_in` (number): URL expiration in seconds (default: 3600)
+- `content_type` (string): Content-Type for PUT operations
+
+**Examples:**
+```json
+// Generate download URL
+{ "bucket": "my-bucket", "key": "docs/report.pdf" }
+
+// Generate download URL with custom expiration
+{ "bucket": "my-bucket", "key": "docs/report.pdf", "expires_in": 7200 }
+
+// Generate upload URL
+{ "bucket": "my-bucket", "key": "uploads/new-file.pdf", "operation": "put", "content_type": "application/pdf" }
+```
+
+## Usage Examples with Claude
 
 Once configured, use natural language with Claude Code:
 
@@ -138,100 +241,6 @@ Generate a presigned URL for "reports/2025/report.pdf" in "my-backup" that expir
 ```
 List all objects in "my-backup" bucket that start with "reports/"
 ```
-
-## API Reference
-
-### list_buckets
-Lists all Wasabi buckets in your account.
-
-**Parameters:** None
-
-**Returns:** Array of bucket objects with names and creation dates
-
----
-
-### create_bucket
-Creates a new Wasabi bucket.
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket to create
-
----
-
-### delete_bucket
-Deletes a Wasabi bucket (bucket must be empty).
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket to delete
-
----
-
-### get_bucket_location
-Gets the region/location of a bucket.
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket
-
----
-
-### list_objects
-Lists objects in a Wasabi bucket.
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket
-- `prefix` (string, optional): Prefix to filter objects
-- `max_keys` (number, optional): Maximum objects to return (default: 1000)
-
----
-
-### upload_object
-Uploads a file to a Wasabi bucket.
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket
-- `key` (string, required): Object key (path) in the bucket
-- `file_path` (string, required): Local file path to upload
-- `content_type` (string, optional): MIME type
-
----
-
-### download_object
-Downloads an object from a Wasabi bucket.
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket
-- `key` (string, required): Object key (path) in the bucket
-- `local_path` (string, required): Local path to save the file
-
----
-
-### delete_object
-Deletes an object from a Wasabi bucket.
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket
-- `key` (string, required): Object key (path) to delete
-
----
-
-### get_object_metadata
-Gets metadata for an object.
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket
-- `key` (string, required): Object key (path)
-
-**Returns:** Object metadata (size, content type, last modified, ETag, custom metadata)
-
----
-
-### generate_presigned_url
-Generates a presigned URL for temporary object access.
-
-**Parameters:**
-- `bucket_name` (string, required): Name of the bucket
-- `key` (string, required): Object key (path)
-- `expires_in` (number, optional): Expiration time in seconds (default: 3600)
 
 ## Security Notes
 

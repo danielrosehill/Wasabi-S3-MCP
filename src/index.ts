@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -24,6 +24,8 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createReadStream, createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
 import * as dotenv from "dotenv";
+import express, { Request, Response } from "express";
+import { randomUUID } from "crypto";
 
 // Load environment variables
 dotenv.config();
@@ -57,7 +59,7 @@ const s3Client = new S3Client({
 const server = new Server(
   {
     name: "wasabi-mcp-server",
-    version: "1.0.0",
+    version: "2.0.0",
   },
   {
     capabilities: {
@@ -66,187 +68,98 @@ const server = new Server(
   }
 );
 
-// List available tools
+// List available tools (consolidated)
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: "list_buckets",
-        description: "List all Wasabi buckets in your account",
-        inputSchema: {
-          type: "object",
-          properties: {},
-        },
-      },
-      {
-        name: "create_bucket",
-        description: "Create a new Wasabi bucket",
+        name: "bucket",
+        description: "Manage Wasabi buckets: list all buckets, create, delete, or get location",
         inputSchema: {
           type: "object",
           properties: {
-            bucket_name: {
+            action: {
               type: "string",
-              description: "Name of the bucket to create",
+              enum: ["list", "create", "delete", "location"],
+              description: "Action to perform: list (all buckets), create, delete, or location (get region)",
+            },
+            name: {
+              type: "string",
+              description: "Bucket name (required for create, delete, location)",
             },
           },
-          required: ["bucket_name"],
+          required: ["action"],
         },
       },
       {
-        name: "delete_bucket",
-        description: "Delete a Wasabi bucket (bucket must be empty)",
+        name: "object",
+        description: "Manage objects in Wasabi buckets: list, upload, download, delete, or get metadata",
         inputSchema: {
           type: "object",
           properties: {
-            bucket_name: {
+            action: {
               type: "string",
-              description: "Name of the bucket to delete",
+              enum: ["list", "upload", "download", "delete", "metadata"],
+              description: "Action to perform on objects",
             },
-          },
-          required: ["bucket_name"],
-        },
-      },
-      {
-        name: "get_bucket_location",
-        description: "Get the region/location of a bucket",
-        inputSchema: {
-          type: "object",
-          properties: {
-            bucket_name: {
+            bucket: {
               type: "string",
-              description: "Name of the bucket",
-            },
-          },
-          required: ["bucket_name"],
-        },
-      },
-      {
-        name: "list_objects",
-        description: "List objects in a Wasabi bucket",
-        inputSchema: {
-          type: "object",
-          properties: {
-            bucket_name: {
-              type: "string",
-              description: "Name of the bucket",
-            },
-            prefix: {
-              type: "string",
-              description: "Optional prefix to filter objects",
-            },
-            max_keys: {
-              type: "number",
-              description: "Maximum number of objects to return (default: 1000)",
-            },
-          },
-          required: ["bucket_name"],
-        },
-      },
-      {
-        name: "upload_object",
-        description: "Upload a file to a Wasabi bucket",
-        inputSchema: {
-          type: "object",
-          properties: {
-            bucket_name: {
-              type: "string",
-              description: "Name of the bucket",
+              description: "Bucket name",
             },
             key: {
               type: "string",
-              description: "Object key (path) in the bucket",
-            },
-            file_path: {
-              type: "string",
-              description: "Local file path to upload",
-            },
-            content_type: {
-              type: "string",
-              description: "Optional content type (MIME type)",
-            },
-          },
-          required: ["bucket_name", "key", "file_path"],
-        },
-      },
-      {
-        name: "download_object",
-        description: "Download an object from a Wasabi bucket",
-        inputSchema: {
-          type: "object",
-          properties: {
-            bucket_name: {
-              type: "string",
-              description: "Name of the bucket",
-            },
-            key: {
-              type: "string",
-              description: "Object key (path) in the bucket",
+              description: "Object key/path (required for upload, download, delete, metadata)",
             },
             local_path: {
               type: "string",
-              description: "Local file path to save the downloaded object",
+              description: "Local file path (required for upload and download)",
+            },
+            prefix: {
+              type: "string",
+              description: "Filter prefix for list action",
+            },
+            max_keys: {
+              type: "number",
+              description: "Maximum objects to return for list action (default: 1000)",
+            },
+            content_type: {
+              type: "string",
+              description: "MIME type for upload action",
             },
           },
-          required: ["bucket_name", "key", "local_path"],
+          required: ["action", "bucket"],
         },
       },
       {
-        name: "delete_object",
-        description: "Delete an object from a Wasabi bucket",
+        name: "presign",
+        description: "Generate presigned URLs for temporary access to objects (GET or PUT)",
         inputSchema: {
           type: "object",
           properties: {
-            bucket_name: {
+            bucket: {
               type: "string",
-              description: "Name of the bucket",
+              description: "Bucket name",
             },
             key: {
               type: "string",
-              description: "Object key (path) to delete",
+              description: "Object key/path",
             },
-          },
-          required: ["bucket_name", "key"],
-        },
-      },
-      {
-        name: "get_object_metadata",
-        description: "Get metadata for an object in a Wasabi bucket",
-        inputSchema: {
-          type: "object",
-          properties: {
-            bucket_name: {
+            operation: {
               type: "string",
-              description: "Name of the bucket",
-            },
-            key: {
-              type: "string",
-              description: "Object key (path)",
-            },
-          },
-          required: ["bucket_name", "key"],
-        },
-      },
-      {
-        name: "generate_presigned_url",
-        description:
-          "Generate a presigned URL for temporary access to an object",
-        inputSchema: {
-          type: "object",
-          properties: {
-            bucket_name: {
-              type: "string",
-              description: "Name of the bucket",
-            },
-            key: {
-              type: "string",
-              description: "Object key (path)",
+              enum: ["get", "put"],
+              description: "Operation type: get (download) or put (upload)",
+              default: "get",
             },
             expires_in: {
               type: "number",
-              description: "URL expiration time in seconds (default: 3600)",
+              description: "URL expiration in seconds (default: 3600)",
+            },
+            content_type: {
+              type: "string",
+              description: "Content-Type for PUT operations",
             },
           },
-          required: ["bucket_name", "key"],
+          required: ["bucket", "key"],
         },
       },
     ],
@@ -259,257 +172,231 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
     switch (name) {
-      case "list_buckets": {
-        const command = new ListBucketsCommand({});
-        const response = await s3Client.send(command);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(response.Buckets, null, 2),
-            },
-          ],
+      case "bucket": {
+        const { action, name: bucketName } = args as {
+          action: "list" | "create" | "delete" | "location";
+          name?: string;
         };
+
+        switch (action) {
+          case "list": {
+            const response = await s3Client.send(new ListBucketsCommand({}));
+            return {
+              content: [{ type: "text", text: JSON.stringify(response.Buckets, null, 2) }],
+            };
+          }
+          case "create": {
+            if (!bucketName) throw new McpError(ErrorCode.InvalidParams, "Bucket name required");
+            await s3Client.send(new CreateBucketCommand({ Bucket: bucketName }));
+            return {
+              content: [{ type: "text", text: `Bucket '${bucketName}' created successfully` }],
+            };
+          }
+          case "delete": {
+            if (!bucketName) throw new McpError(ErrorCode.InvalidParams, "Bucket name required");
+            await s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
+            return {
+              content: [{ type: "text", text: `Bucket '${bucketName}' deleted successfully` }],
+            };
+          }
+          case "location": {
+            if (!bucketName) throw new McpError(ErrorCode.InvalidParams, "Bucket name required");
+            const response = await s3Client.send(new GetBucketLocationCommand({ Bucket: bucketName }));
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({ bucket: bucketName, location: response.LocationConstraint || "us-east-1" }, null, 2),
+              }],
+            };
+          }
+          default:
+            throw new McpError(ErrorCode.InvalidParams, `Unknown bucket action: ${action}`);
+        }
       }
 
-      case "create_bucket": {
-        const { bucket_name } = args as { bucket_name: string };
-        const command = new CreateBucketCommand({
-          Bucket: bucket_name,
-        });
-        await s3Client.send(command);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Bucket '${bucket_name}' created successfully`,
-            },
-          ],
-        };
-      }
-
-      case "delete_bucket": {
-        const { bucket_name } = args as { bucket_name: string };
-        const command = new DeleteBucketCommand({
-          Bucket: bucket_name,
-        });
-        await s3Client.send(command);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Bucket '${bucket_name}' deleted successfully`,
-            },
-          ],
-        };
-      }
-
-      case "get_bucket_location": {
-        const { bucket_name } = args as { bucket_name: string };
-        const command = new GetBucketLocationCommand({
-          Bucket: bucket_name,
-        });
-        const response = await s3Client.send(command);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  bucket: bucket_name,
-                  location: response.LocationConstraint || "us-east-1",
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      }
-
-      case "list_objects": {
-        const { bucket_name, prefix, max_keys } = args as {
-          bucket_name: string;
+      case "object": {
+        const { action, bucket, key, local_path, prefix, max_keys, content_type } = args as {
+          action: "list" | "upload" | "download" | "delete" | "metadata";
+          bucket: string;
+          key?: string;
+          local_path?: string;
           prefix?: string;
           max_keys?: number;
-        };
-        const command = new ListObjectsV2Command({
-          Bucket: bucket_name,
-          Prefix: prefix,
-          MaxKeys: max_keys || 1000,
-        });
-        const response = await s3Client.send(command);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  bucket: bucket_name,
-                  count: response.KeyCount,
-                  objects: response.Contents,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      }
-
-      case "upload_object": {
-        const { bucket_name, key, file_path, content_type } = args as {
-          bucket_name: string;
-          key: string;
-          file_path: string;
           content_type?: string;
         };
-        const fileStream = createReadStream(file_path);
-        const command = new PutObjectCommand({
-          Bucket: bucket_name,
-          Key: key,
-          Body: fileStream,
-          ContentType: content_type,
-        });
-        await s3Client.send(command);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `File uploaded successfully to ${bucket_name}/${key}`,
-            },
-          ],
-        };
-      }
 
-      case "download_object": {
-        const { bucket_name, key, local_path } = args as {
-          bucket_name: string;
-          key: string;
-          local_path: string;
-        };
-        const command = new GetObjectCommand({
-          Bucket: bucket_name,
-          Key: key,
-        });
-        const response = await s3Client.send(command);
-        if (response.Body) {
-          const writeStream = createWriteStream(local_path);
-          await pipeline(response.Body as any, writeStream);
-          return {
-            content: [
-              {
+        switch (action) {
+          case "list": {
+            const response = await s3Client.send(new ListObjectsV2Command({
+              Bucket: bucket,
+              Prefix: prefix,
+              MaxKeys: max_keys || 1000,
+            }));
+            return {
+              content: [{
                 type: "text",
-                text: `Object downloaded successfully to ${local_path}`,
-              },
-            ],
-          };
-        }
-        throw new Error("No body in response");
-      }
-
-      case "delete_object": {
-        const { bucket_name, key } = args as {
-          bucket_name: string;
-          key: string;
-        };
-        const command = new DeleteObjectCommand({
-          Bucket: bucket_name,
-          Key: key,
-        });
-        await s3Client.send(command);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Object ${bucket_name}/${key} deleted successfully`,
-            },
-          ],
-        };
-      }
-
-      case "get_object_metadata": {
-        const { bucket_name, key } = args as {
-          bucket_name: string;
-          key: string;
-        };
-        const command = new HeadObjectCommand({
-          Bucket: bucket_name,
-          Key: key,
-        });
-        const response = await s3Client.send(command);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  bucket: bucket_name,
-                  key: key,
+                text: JSON.stringify({ bucket, count: response.KeyCount, objects: response.Contents }, null, 2),
+              }],
+            };
+          }
+          case "upload": {
+            if (!key || !local_path) throw new McpError(ErrorCode.InvalidParams, "key and local_path required for upload");
+            const fileStream = createReadStream(local_path);
+            await s3Client.send(new PutObjectCommand({
+              Bucket: bucket,
+              Key: key,
+              Body: fileStream,
+              ContentType: content_type,
+            }));
+            return {
+              content: [{ type: "text", text: `Uploaded ${local_path} to ${bucket}/${key}` }],
+            };
+          }
+          case "download": {
+            if (!key || !local_path) throw new McpError(ErrorCode.InvalidParams, "key and local_path required for download");
+            const response = await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+            if (!response.Body) throw new Error("No body in response");
+            await pipeline(response.Body as any, createWriteStream(local_path));
+            return {
+              content: [{ type: "text", text: `Downloaded ${bucket}/${key} to ${local_path}` }],
+            };
+          }
+          case "delete": {
+            if (!key) throw new McpError(ErrorCode.InvalidParams, "key required for delete");
+            await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+            return {
+              content: [{ type: "text", text: `Deleted ${bucket}/${key}` }],
+            };
+          }
+          case "metadata": {
+            if (!key) throw new McpError(ErrorCode.InvalidParams, "key required for metadata");
+            const response = await s3Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  bucket,
+                  key,
                   size: response.ContentLength,
                   contentType: response.ContentType,
                   lastModified: response.LastModified,
                   etag: response.ETag,
                   metadata: response.Metadata,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+                }, null, 2),
+              }],
+            };
+          }
+          default:
+            throw new McpError(ErrorCode.InvalidParams, `Unknown object action: ${action}`);
+        }
       }
 
-      case "generate_presigned_url": {
-        const { bucket_name, key, expires_in } = args as {
-          bucket_name: string;
+      case "presign": {
+        const { bucket, key, operation = "get", expires_in, content_type } = args as {
+          bucket: string;
           key: string;
+          operation?: "get" | "put";
           expires_in?: number;
+          content_type?: string;
         };
-        const command = new GetObjectCommand({
-          Bucket: bucket_name,
-          Key: key,
-        });
-        const url = await getSignedUrl(s3Client, command, {
-          expiresIn: expires_in || 3600,
-        });
+
+        const expiresIn = expires_in || 3600;
+        let command;
+
+        if (operation === "put") {
+          command = new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            ContentType: content_type,
+          });
+        } else {
+          command = new GetObjectCommand({ Bucket: bucket, Key: key });
+        }
+
+        const url = await getSignedUrl(s3Client, command, { expiresIn });
         return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  bucket: bucket_name,
-                  key: key,
-                  url: url,
-                  expiresIn: expires_in || 3600,
-                },
-                null,
-                2
-              ),
-            },
-          ],
+          content: [{
+            type: "text",
+            text: JSON.stringify({ bucket, key, operation, url, expiresIn }, null, 2),
+          }],
         };
       }
 
       default:
-        throw new McpError(
-          ErrorCode.MethodNotFound,
-          `Unknown tool: ${name}`
-        );
+        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    if (error instanceof McpError) throw error;
+    const errorMessage = error instanceof Error ? error.message : String(error);
     throw new McpError(ErrorCode.InternalError, `Tool execution failed: ${errorMessage}`);
   }
 });
 
-// Start the server
+// Session management for Streamable HTTP
+const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+// Start the server with Streamable HTTP transport
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Wasabi MCP Server running on stdio");
+  const app = express();
+  app.use(express.json());
+
+  const PORT = process.env.PORT || 3000;
+
+  // MCP endpoint
+  app.all("/mcp", async (req: Request, res: Response) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+    if (req.method === "POST") {
+      // Handle new session or existing session
+      let transport = sessionId ? sessions.get(sessionId) : undefined;
+
+      if (!transport) {
+        // Create new transport for new session
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            sessions.set(id, transport!);
+            console.error(`Session initialized: ${id}`);
+          },
+        });
+
+        // Connect server to transport
+        await server.connect(transport);
+      }
+
+      await transport.handleRequest(req, res, req.body);
+    } else if (req.method === "GET") {
+      // SSE stream for server-to-client messages
+      if (!sessionId || !sessions.has(sessionId)) {
+        res.status(400).json({ error: "Invalid or missing session ID" });
+        return;
+      }
+      const transport = sessions.get(sessionId)!;
+      await transport.handleRequest(req, res);
+    } else if (req.method === "DELETE") {
+      // Session termination
+      if (sessionId && sessions.has(sessionId)) {
+        const transport = sessions.get(sessionId)!;
+        await transport.handleRequest(req, res);
+        sessions.delete(sessionId);
+        console.error(`Session terminated: ${sessionId}`);
+      } else {
+        res.status(404).json({ error: "Session not found" });
+      }
+    } else {
+      res.status(405).json({ error: "Method not allowed" });
+    }
+  });
+
+  // Health check endpoint
+  app.get("/health", (_req: Request, res: Response) => {
+    res.json({ status: "ok", version: "2.0.0" });
+  });
+
+  app.listen(PORT, () => {
+    console.error(`Wasabi MCP Server running on http://localhost:${PORT}/mcp`);
+    console.error(`Health check: http://localhost:${PORT}/health`);
+  });
 }
 
 main().catch((error) => {
