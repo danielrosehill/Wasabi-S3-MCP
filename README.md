@@ -51,6 +51,8 @@ The server requires the following environment variables:
 | `WASABI_REGION` | Wasabi region | `eu-central-2` |
 | `WASABI_ENDPOINT` | Wasabi endpoint URL | `s3.eu-central-2.wasabisys.com` |
 | `PORT` | Server port (optional) | `3000` (default) |
+| `MCP_HOST` | Bind address (optional) | `127.0.0.1` (default) |
+| `MCP_AUTH_TOKEN` | Bearer token clients must send. Optional on loopback, **required** on any other `MCP_HOST` | a long random string |
 
 ### Wasabi Regions
 
@@ -83,7 +85,23 @@ npm start
 PORT=3000 node dist/index.js
 ```
 
-The server will start on `http://localhost:3000/mcp` with a health check at `http://localhost:3000/health`.
+The server will start on `http://127.0.0.1:3000/mcp` with a health check at `http://127.0.0.1:3000/health`.
+
+### Network exposure and authentication
+
+The `object` tool reads and writes local files (`local_path` on upload and download) and
+`bucket` can delete buckets, so the server binds to `127.0.0.1` by default. To listen on
+another address, set `MCP_HOST` **and** `MCP_AUTH_TOKEN`; the server refuses to start on a
+non-loopback address without a token. Clients then send `Authorization: Bearer <token>` on
+every request (`/health` stays open).
+
+```bash
+MCP_HOST=0.0.0.0 MCP_AUTH_TOKEN=a-long-random-string npm start
+```
+
+Each MCP session gets its own server instance, so any number of clients can connect.
+Before 2.1.0, the server listened on all interfaces with no authentication, and a second
+client's `initialize` crashed the process.
 
 ## Usage with Claude Code
 
@@ -95,7 +113,7 @@ Add to your Claude Code MCP settings (`~/.config/claude-code/settings.json` or p
 {
   "mcpServers": {
     "wasabi": {
-      "url": "http://localhost:3000/mcp",
+      "url": "http://127.0.0.1:3000/mcp",
       "transport": "streamable-http"
     }
   }
